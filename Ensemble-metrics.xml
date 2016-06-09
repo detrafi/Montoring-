@@ -1,0 +1,395 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Export generator="Cache" version="25" zv="Cache for Windows (x86-64) 2015.1.2 (Build 607U)" ts="2016-06-09 09:21:40">
+<Class name="CC.Report.Metrics.DatabaseInfo">
+<Description>
+Database characteristics</Description>
+<Super>%Persistent</Super>
+<TimeChanged>63921,37479.680728</TimeChanged>
+<TimeCreated>63732,28528.666764</TimeCreated>
+
+<Property name="RunDate">
+<Type>%String</Type>
+</Property>
+
+<Index name="RunDateIndex">
+<Properties>RunDate</Properties>
+</Index>
+
+<Property name="Size">
+<Type>%String</Type>
+</Property>
+
+<Property name="Available">
+<Type>%String</Type>
+</Property>
+
+<Property name="PctAvailable">
+<Type>%String</Type>
+</Property>
+
+<Property name="DiskFreeSpace">
+<Type>%String</Type>
+</Property>
+
+<Property name="Name">
+<Type>CC.Report.Metrics.Databases</Type>
+<Cardinality>parent</Cardinality>
+<Inverse>Metrics</Inverse>
+<Relationship>1</Relationship>
+</Property>
+
+<Storage name="Default">
+<Type>%Library.CacheStorage</Type>
+<DataLocation>^CC.Report.Met98BE.DatabaseInfoD</DataLocation>
+<DefaultData>DatabaseInfoDefaultData</DefaultData>
+<IdLocation>^CC.Report.Met98BE.DatabaseInfoD</IdLocation>
+<IndexLocation>^CC.Report.Met98BE.DatabaseInfoI</IndexLocation>
+<StreamLocation>^CC.Report.Met98BE.DatabaseInfoS</StreamLocation>
+<Data name="DatabaseInfoDefaultData">
+<Value name="1">
+<Value>%%CLASSNAME</Value>
+</Value>
+<Value name="2">
+<Value>RunDate</Value>
+</Value>
+<Value name="3">
+<Value>Size</Value>
+</Value>
+<Value name="4">
+<Value>Available</Value>
+</Value>
+<Value name="5">
+<Value>PctAvailable</Value>
+</Value>
+<Value name="6">
+<Value>DiskFreeSpace</Value>
+</Value>
+<Value name="7">
+<Value>JournalFileSpace</Value>
+</Value>
+</Data>
+</Storage>
+</Class>
+
+
+<Class name="CC.Report.Metrics.Databases">
+<Super>%Persistent</Super>
+<TimeChanged>64078,33542.732299</TimeChanged>
+<TimeCreated>63732,27972.216329</TimeCreated>
+
+<Property name="DBName">
+<Type>%String</Type>
+</Property>
+
+<Index name="DBNameIndex">
+<Properties>DBName</Properties>
+<Unique>1</Unique>
+</Index>
+
+<Property name="DBDir">
+<Type>%String</Type>
+</Property>
+
+<Property name="Metrics">
+<Type>CC.Report.Metrics.DatabaseInfo</Type>
+<Cardinality>children</Cardinality>
+<Inverse>Name</Inverse>
+<Relationship>1</Relationship>
+</Property>
+
+<Method name="Run">
+<ClassMethod>1</ClassMethod>
+<FormalSpec>pNameSpace:%String,pEmailList:%String</FormalSpec>
+<Implementation><![CDATA[
+	do ..Update()
+	do ..DBInfo()
+	do ..SysInfo(pNameSpace)
+
+	 if ($system.Mirror.IsPrimary())
+	 {	ZNSPACE pNameSpace
+	 	ZNSPACE "%sys"
+	 	set tP2 = ^MIRROR("LIVEMIRROR","LastJrnfileSent","HSTSENSEMBLEP2/UVAHSPRD")
+	 	set tP3 = ^MIRROR("LIVEMIRROR","LastJrnfileSent","HSTSENSEMBLEP3/UVAHSPRD")
+	 	
+	 	set tDateP2 = $zdate($P($P(tP2,"^",1),",",1))
+	 	set tDateP3 = $zdate($P($P(tP3,"^",1),",",1))
+	 	set tTimeP2 = $ztime($P($P(tP2,"^",1),",",2) - 18000)
+	 	set tTimeP3 = $ztime($P($P(tP3,"^",1),",",2) - 18000)
+	 	set tJRNP2 = $P(tP2,"^",3)
+	 	set tJRNP3 = $P(tP3,"^",3)
+	 	
+	 	set tDataP2 = tDateP2_" - "_tTimeP2_","_tJRNP2
+	 	set tDataP3 = tDateP3_" - "_tTimeP3_","_tJRNP3
+	 
+	 
+	 	ZNSPACE pNameSpace
+		do ##class(CC.Report.Email.Create).Build(pEmailList,tDataP2,tDataP3)
+		ZNSPACE "Ensemble"
+	 }
+]]></Implementation>
+</Method>
+
+<Method name="Update">
+<ClassMethod>1</ClassMethod>
+<Implementation><![CDATA[
+
+	Try
+	{
+	set tNameSpace = $ZNSPACE
+	set tSQL = "select * from Config.Databases where SectionHeader = 'Databases' order by Name"
+ 	set tRS =##class(%ResultSet).%New()
+	ZNSPACE "%SYS"
+	set tSC = tRS.Prepare(tSQL)
+	set tSC = tRS.Execute()
+	set tJFSpace = ##class(%SYS.Journal.System).GetFreeSpace()
+	ZNSPACE tNameSpace
+	while tRS.%Next()
+	{
+				
+				set obj =##class(CC.Report.Metrics.Databases).%New()
+				set obj.DBName = tRS.Data("Name")
+				set obj.DBDir = tRS.Data("Directory")
+				set tSC = obj.%Save()
+	}}
+	Catch exceptionvar
+	{
+		return $$$ERROR($$$GeneralError, "Invalid key: ")	
+	}
+]]></Implementation>
+</Method>
+
+<Method name="DBInfo">
+<ClassMethod>1</ClassMethod>
+<Implementation><![CDATA[
+	
+	try {
+
+	set tNameSpace = $ZNSPACE
+	set tJFSpace = ##class(%SYS.Journal.System).GetFreeSpace()
+
+ 	set tRS =##class(%ResultSet).%New()
+	set tSQL = "select * from CC_Report_Metrics.Databases order by DBName"
+	set tSC = tRS.Prepare(tSQL)
+	set tSC = tRS.Execute()
+	While tRS.%Next()
+	{
+		set tFilter = $P(tRS.DBDir,":",2)
+		if (tFilter '= "mirror" ) {
+			set free = 0
+			set tDBSize = 0
+			set tDiskFree = 0
+			set FreeDirSpace = 0
+			set tCurrentRecord = tRS.Data("ID")
+			set tDB = ##class(CC.Report.Metrics.Databases).%OpenId(tCurrentRecord)
+			set tDBI = ##class(CC.Report.Metrics.DatabaseInfo).%New()
+			ZNSPACE "%SYS"
+			set db = ##class(SYS.Database).%OpenId(tDB.DBDir)
+			set sc=db.GetFreeSpace(tDB.DBDir,,.tDiskFree)
+			set sc=db.GetDatabaseFreeSpace(tDB.DBDir,.free)
+			ZNSPACE tNameSpace
+			do ##class(%Library.File).GetDirectorySpace(tDB.DBDir,.FreeDirSpace,,2)
+			set tDBFreeSpace = free
+			set tDBI.DiskFreeSpace = FreeDirSpace
+			set tDBI.Available = free
+			set tDBI.Size = db.Size
+			set tDBI.PctAvailable = $JUSTIFY(100 * tDBFreeSpace/db.Size,5,2)
+			set tDBI.RunDate = $P($Now(),",",1)
+			set tDBI.Name = tDB
+			set sc =  tDBI.%Save()
+			do tDBI.%Close()
+			
+		}
+	}
+
+	}
+		Catch exceptionvar
+	{
+		return $$$ERROR($$$GeneralError, "Invalid key: ")	
+	}
+]]></Implementation>
+</Method>
+
+<Method name="SysInfo">
+<ClassMethod>1</ClassMethod>
+<FormalSpec>pNameSpace</FormalSpec>
+<Implementation><![CDATA[
+	
+	set tNameSpace = $ZNSPACE
+	
+	ZNSPACE pNameSpace
+	
+	set tToday = $zdate($now(),3)_" 00:00:00.000"
+ 	set tToday30 = $zdate($now() - 30, 3)_" 00:00:00.000"
+ 	set tToday60 = $zdate($now() - 60, 3)_" 00:00:00.000"
+ 	set tToday90 = $zdate($now() - 90, 3)_" 00:00:00.000"
+
+	
+	
+	&sql(select count(*) into :counth from Ens.MessageHeader)
+ 	&sql(select count(*) into :counthl730 from EnsLib_HL7.Message WHERE TimeCreated < :tToday AND TimeCreated > :tToday30)
+    &sql(select count(*) into :counthl760 from EnsLib_HL7.Message WHERE TimeCreated < :tToday30 AND TimeCreated > :tToday60)
+    &sql(select count(*) into :counthl790 from EnsLib_HL7.Message WHERE TimeCreated < :tToday60 AND TimeCreated > :tToday90)
+    &sql(select count(*) into :counthl790up from EnsLib_HL7.Message WHERE TimeCreated < :tToday90)
+    
+    set counthl7 = counthl730 + counthl760 + counthl790 + counthl790up
+	
+	// Set the dates for the fullsize query
+ 	set tTodayDate = $PIECE($now(),",",1)
+	set tFirstDateTime  = $ZDATE(tTodayDate - 1,3)_" 00:00:00.000"
+	set tSecondDateTime = $ZDATE(tTodayDate - 1,3)_" 23:59:59.999"
+	&sql(select sum(FullSize) into :SumFullSize from EnsLib_HL7.Message Where TimeCreated between :tFirstDateTime and :tSecondDateTime)
+	
+	ZNSPACE "%SYS"
+	set tJFSpace = ##class(%SYS.Journal.System).GetFreeSpace()
+	ZNSPACE tNameSpace
+
+	set tDB = ##class(CC.Report.Metrics.SysInfo).%New()
+	
+	set tDB.HL7HeaderCount = counth
+	
+	set tDB.HL7MessageCount = counthl7
+	
+	
+	set tDB.JournalFileSpace = tJFSpace
+	
+	set tDB.RunDate = ##class(%Library.Date).DisplayToLogical($zdate($now()))
+	
+	set tDB.FullSize = SumFullSize
+	
+	set tDB.ThirtyDayCount = counthl730
+	
+	set tDB.SixtyDayCount = counthl760
+	
+	set tDB.NinetyDayCount = counthl790
+	
+	set tDB.OverNinteyDays = counthl790up
+	
+	do tDB.%Save()
+]]></Implementation>
+</Method>
+
+<Storage name="Default">
+<Type>%Library.CacheStorage</Type>
+<DataLocation>^CC.Report.Metrics.DatabasesD</DataLocation>
+<DefaultData>DatabasesDefaultData</DefaultData>
+<IdLocation>^CC.Report.Metrics.DatabasesD</IdLocation>
+<IndexLocation>^CC.Report.Metrics.DatabasesI</IndexLocation>
+<StreamLocation>^CC.Report.Metrics.DatabasesS</StreamLocation>
+<Data name="DatabasesDefaultData">
+<Value name="1">
+<Value>%%CLASSNAME</Value>
+</Value>
+<Value name="2">
+<Value>DBName</Value>
+</Value>
+<Value name="3">
+<Value>DBDir</Value>
+</Value>
+<Value name="4">
+<Value>pNameSpace</Value>
+</Value>
+</Data>
+</Storage>
+</Class>
+
+
+<Class name="CC.Report.Metrics.SysInfo">
+<Super>%Persistent</Super>
+<TimeChanged>63964,45953.01341</TimeChanged>
+<TimeCreated>63734,51032.924244</TimeCreated>
+
+<Property name="RunDate">
+<Type>%Date</Type>
+</Property>
+
+<Property name="JournalFileSpace">
+<Type>%String</Type>
+</Property>
+
+<Property name="HL7MessageCount">
+<Type>%String</Type>
+</Property>
+
+<Property name="HL7OrphanCount">
+<Type>%String</Type>
+</Property>
+
+<Property name="HL7HeaderCount">
+<Type>%String</Type>
+</Property>
+
+<Property name="FullSize">
+<Type>%String</Type>
+</Property>
+
+<Property name="ThirtyDayCount">
+<Type>%String</Type>
+</Property>
+
+<Property name="SixtyDayCount">
+<Type>%String</Type>
+</Property>
+
+<Property name="NinetyDayCount">
+<Type>%String</Type>
+</Property>
+
+<Property name="OverNinteyDays">
+<Type>%String</Type>
+</Property>
+
+<UDLText name="T">
+<Content><![CDATA[
+// Relationship SysDate As CC.Report.Metrics.Databases [ Cardinality = parent, Inverse = SysInfo ];
+
+]]></Content>
+</UDLText>
+
+<Storage name="Default">
+<Type>%Library.CacheStorage</Type>
+<DataLocation>^CC.Report.Metrics.SysInfoD</DataLocation>
+<DefaultData>SysInfoDefaultData</DefaultData>
+<IdLocation>^CC.Report.Metrics.SysInfoD</IdLocation>
+<IndexLocation>^CC.Report.Metrics.SysInfoI</IndexLocation>
+<StreamLocation>^CC.Report.Metrics.SysInfoS</StreamLocation>
+<Data name="SysInfoDefaultData">
+<Value name="1">
+<Value>%%CLASSNAME</Value>
+</Value>
+<Value name="2">
+<Value>sysDate</Value>
+</Value>
+<Value name="3">
+<Value>JournalFileSpace</Value>
+</Value>
+<Value name="4">
+<Value>HL7MessageCount</Value>
+</Value>
+<Value name="5">
+<Value>HL7OrphanCount</Value>
+</Value>
+<Value name="6">
+<Value>HL7HeaderCount</Value>
+</Value>
+<Value name="7">
+<Value>RunDate</Value>
+</Value>
+<Value name="8">
+<Value>FullSize</Value>
+</Value>
+<Value name="9">
+<Value>ThirtyDayCount</Value>
+</Value>
+<Value name="10">
+<Value>SixtyDayCount</Value>
+</Value>
+<Value name="11">
+<Value>NinetyDayCount</Value>
+</Value>
+<Value name="12">
+<Value>OverNinteyDays</Value>
+</Value>
+</Data>
+</Storage>
+</Class>
+</Export>

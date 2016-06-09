@@ -1,0 +1,546 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Export generator="Cache" version="25" zv="Cache for Windows (x86-64) 2015.1.2 (Build 607U)" ts="2016-06-09 09:22:24">
+<Class name="CC.Report.Email.Create">
+<IncludeCode>%syMirror</IncludeCode>
+<Super>%Persistent,%CSP.UI.Portal.Utils</Super>
+<System>4</System>
+<TimeChanged>64027,46192.02435</TimeChanged>
+<TimeCreated>63725,28002.812631</TimeCreated>
+
+<Method name="SMTP">
+<ClassMethod>1</ClassMethod>
+<FormalSpec>pEMail:%String,pMessageText:%List,pSubject:%String,pCount:%String</FormalSpec>
+<ReturnType>%List</ReturnType>
+<Implementation><![CDATA[
+  
+
+  set tLoop = 1
+  Set server=##class(%Net.SMTP).%New()
+  Set server.smtpserver="<your email server>"
+  Set server.port=25
+
+  Set msg = ##class(%Net.MailMessage).%New()
+
+  Set msg.From = "<your email>"
+  
+  Do msg.To.Insert(pEMail)
+
+  Set msg.Subject=pSubject
+  Set msg.IsBinary=0
+  Set msg.IsHTML=0
+  
+  while tLoop <= pCount {
+  
+  	Do msg.TextData.Write(pMessageText.GetAt(tLoop))
+  	set tLoop = tLoop + 1
+  
+  }
+  
+  Set status=server.Send(msg)
+  
+
+  If $$$ISERR(status) 
+  {
+    Do $System.Status.DisplayError(status)
+    Write server.Error
+    Quit $$$ERROR()
+    }
+  Quit server.FailedSend
+]]></Implementation>
+</Method>
+
+<Method name="Build">
+<ClassMethod>1</ClassMethod>
+<FormalSpec>pEmail:%String,pDataP1:%String="",pDataP3:%String=""</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	
+	// Switch to SYS namespace to get mirror status
+	ZNSPACE "%sys"
+	Set mode = $SYSTEM.Mirror.FailoverRule()
+	If mode = $$$ArbiterControlledMirrorFailover {
+		Set modeString = $$$Text("Arbiter Controlled")
+	} ElseIf mode = $$$AgentControlledMirrorFailover {
+		Set modeString = $$$Text("Agent Controlled")
+	} Else {
+		Set modeString = $$$Text("User Controlled")
+	}
+	
+	Set state = $SYSTEM.Mirror.ArbiterState()
+	Set thisConnected = $SELECT($ZB(+state,+$$$ArbiterConnected,1)'=0:1,1:0)
+	Set otherConnected = $SELECT($ZB(+state,+$$$ArbiterPeerConnected,1)'=0:1,1:0)
+	
+	If 'thisConnected {
+		Set stateString = $$$Text("This member is not connected to the arbiter")
+	} ElseIf 'otherConnected {
+		Set stateString = $$$Text("Only this member is connected to the arbiter")
+	} Else {
+		Set stateString = $$$Text("Both failover members are connected to the arbiter")
+	}
+	
+	ZNSPACE "LIVE"
+	
+	//Start email build
+	set EmailText=##class(%ListOfDataTypes).%New()
+	
+	set x = 1
+	set tSubject = "Ensemble LIVE Daily Metrics Report"
+	set tNameSpace = $ZNSPACE
+ 	
+ 	//Switch to unmirrored namespace to get the metrics for the server that is primary.  Build the body of the email with the last seven days worth
+ 	//of data.
+ 	ZNSPACE "Ensemble"
+ 
+	set tSQL = "SELECT TOP 7 DBName, DBDir, DatabaseInfo->Available as Database_Available_Space,DatabaseInfo->PctAvailable,DatabaseInfo->RunDate,DatabaseInfo->Size as Database_Size,DatabaseInfo->DiskFreeSpace from CC_Report_Metrics.Databases WHERE DBName = 'LIVE' ORDER BY RunDate desc"
+
+ 	set tRS =##class(%ResultSet).%New()
+
+	set tSC = tRS.Prepare(tSQL)
+	set tSC = tRS.Execute()
+	
+	
+	ZNSPACE "Ensemble"
+
+	do EmailText.Insert("Date"_$C(09,09)_"DB NAME"_$C(09)_"Directory"_$C(09)_"Size(GB)"_$C(09)_"Free(GB)"_$C(09)_"% Free"_$C(09,09)_"Free Disk Space(GB)"_$C(13,10))
+	do EmailText.Insert(("------------------------------------------------------------------------------------------------------------------------------------------------"_$C(13,10)))
+	While tRS.%Next() {
+ 		set tDir = tRS.Data("DBDir")
+		set tName = tRS.Data("DBName")
+		set tDBSize = $FNUMBER((tRS.Data("Database_Size")/1000),",")
+		set tDBFreeSpace = $FNUMBER((tRS.Data("Database_Available_Space")/1000),",")
+		set tPercent = tRS.Data("PctAvailable")
+		set tRunDate = $ZDATE(tRS.Data("RunDate"))
+		set FreeDirSpace = tRS.Data("DiskFreeSpace")
+		do EmailText.Insert(tRunDate_$C(09)_tName_$C(09,09)_tDir_$C(09,09)_tDBSize_$C(09,09)_tDBFreeSpace_$C(09,09)_tPercent_$C(09,09)_FreeDirSpace_$C(13,10))
+	}
+ 	do tRS.Close()
+    
+
+    
+    //Switch back to the mirrored namespace and get the status of the last purge job.  For some reason, it's always the second entry, so skip the first one
+    ZNSPACE tNameSpace
+
+    
+	
+  	set tSQL="SELECT TOP 2 * FROM %SYS_Task.History  Where ExecuteCode = 'Ens.Util.Tasks.Purge'  ORDER BY DisplayFinished DESC"
+ 	            
+	 
+	 do tRS.Close()
+	 set tRS = ##class(%ResultSet).%New()
+	 set tSC = tRS.Prepare(tSQL)
+	 set tSC = tRS.Execute()
+	 
+	 set sc = tRS.%Next()
+	 
+
+	 do EmailText.Insert($C(13,10)_$C(13,10)_"Last Purge Job: "_$C(13,10))
+	 do EmailText.Insert("Started:        "_tRS.DisplayStarted_$C(13,10))
+	 do EmailText.Insert("Finished:       "_tRS.DisplayFinished_$C(13,10))
+	 do EmailText.Insert("Status:         "_tRS.Error_$C(13,10))
+	 
+	  
+	 do tRS.Close()
+
+	
+	//Go back to the SYS namespace and create the mirror report for the email and insert it.
+	ZNSPACE "%SYS"
+	
+	do EmailText.Insert($C(13,10)_$C(13,10)_"Mirror Status: "_$C(13,10))
+	do EmailText.Insert("Failover Mode:           "_modeString_$C(13,10))
+	do EmailText.Insert("Connection Status:    "_stateString_$C(13,10)_$C(13,10))
+	Set MirrorName = "LIVEMIRROR"
+	Set tRS = ##class(%ResultSet).%New("SYS.Mirror:MemberStatusList")
+	Do tRS.Execute(MirrorName)
+	While tRS.Next() {
+		Set MemberName = tRS.Data("MemberName")
+		Set role = tRS.Data("CurrentRole")
+		Set status = tRS.Data("CurrentStatus")
+		Set DisplayType = tRS.Data("DisplayType")
+		Set DisplayStatus = tRS.Data("DisplayStatus")
+		Set JournalLatency = tRS.Data("JournalTimeLatency")
+		Set DatabaseLatency = tRS.Data("DatabaseTimeLatency")
+		
+		do EmailText.Insert("Member Name:        "_MemberName_$C(13,10))
+		do EmailText.Insert("Current Role:              "_role_$C(13,10))
+		do EmailText.Insert("Status:                           "_status_$C(13,10))
+		do EmailText.Insert("Current Type:            "_DisplayType_$C(13,10))
+		do EmailText.Insert("Journal Latency:        "_JournalLatency_$C(13,10))
+		do EmailText.Insert("Database Latency:    "_DatabaseLatency_$C(13,10)_$C(13,10))
+		
+		
+		
+
+		}
+     do EmailText.Insert($C(13,10)_"Mirror file status"_$C(13,10))
+	 do EmailText.Insert("Time last file sent, Journal File"_$C(13,10))
+	 do EmailText.Insert("Secondary:     "_pDataP1_$C(13,10))
+	 do EmailText.Insert("D/R                    "_pDataP3_$C(13,10))
+
+	
+	Do tRS.Close()
+	
+	ZNSPACE "ENSEMBLE"
+	//Get Specific HL7 data from the table
+	set tJFSpace = ##class(%SYS.Journal.System).GetFreeSpace()
+	set tSQL="select TOP 7 HL7HeaderCount, HL7MessageCount,OverNinteyDays,JournalFileSpace,RunDate,FullSize from CC_Report_Metrics.SysInfo order by RunDate desc"
+	set tRS =##class(%ResultSet).%New()
+	set tSC = tRS.Prepare(tSQL)
+	set tSC = tRS.Execute()
+
+ 	do EmailText.Insert($C(13,10)_$C(13,10)_"Date"_$C(09)_$C(09,09)_"Msg Header Count"_$C(09)_"HL7 Msg Count"_$C(09)_$C(09)_"Over 90 day count"_$C(09)_"Journal Free Space (GB)"_$C(09)_"Full Size"_$C(13,10))
+   	do EmailText.Insert("--------------------------------------------------------------------------------------------------------------------------------------------------------------------------"_$C(13,10))
+    
+     	 while tRS.%Next(){
+	 	 
+	 	 do EmailText.Insert($zdate(tRS.Data("RunDate"))_$C(09)_$C(09)_
+	 	 				$FNUMBER(tRS.Data("HL7HeaderCount"),",")_$C(09)_$C(09)_
+	 	 				$FNUMBER(tRS.Data("HL7MessageCount"),",")_$C(09)_$C(09)_
+	 	 				$FNUMBER(tRS.Data("OverNinteyDays"),",")_$C(09)_$C(09)_
+	 	 				$FNUMBER((tRS.Data("JournalFileSpace")/1000000000),",",2)_$C(09)_$C(09,09,09)_
+	 	 				$FNUMBER(tRS.Data("FullSize"),",")_$C(09)_$C(13,10))
+	 	  }
+
+	ZNSPACE tNameSpace
+	set tCount = EmailText.Count()
+
+	 for x=1:1:$LENGTH(pEmail,",") {
+			 set tEmail = $PIECE(pEmail,",",x) 
+			 do ..SMTP(tEmail,EmailText,tSubject,tCount)
+		  }
+]]></Implementation>
+</Method>
+
+<Method name="Pad">
+<ClassMethod>1</ClassMethod>
+<FormalSpec>pInput:%String,pLength:%String</FormalSpec>
+<Implementation><![CDATA[
+		//$$$LOGINFO("Padding "_pInput)
+		set pReturn = ##class(Ens.Util.FunctionSet).Pad(pInput,pLength," ")
+		quit pReturn
+]]></Implementation>
+</Method>
+
+<Storage name="Default">
+<Type>%Library.CacheStorage</Type>
+<DataLocation>^CC.Report.Email.CreateD</DataLocation>
+<DefaultData>CreateDefaultData</DefaultData>
+<IdLocation>^CC.Report.Email.CreateD</IdLocation>
+<IndexLocation>^CC.Report.Email.CreateI</IndexLocation>
+<StreamLocation>^CC.Report.Email.CreateS</StreamLocation>
+<Data name="CreateDefaultData">
+<Value name="1">
+<Value>%%CLASSNAME</Value>
+</Value>
+<Value name="2">
+<Value>Filter</Value>
+</Value>
+<Value name="3">
+<Value>CurrentColumn</Value>
+</Value>
+<Value name="4">
+<Value>CurrentSort</Value>
+</Value>
+<Value name="5">
+<Value>captionLastUpdate</Value>
+</Value>
+<Value name="6">
+<Value>%partial</Value>
+</Value>
+<Value name="7">
+<Value>HelpAddress</Value>
+</Value>
+<Value name="8">
+<Value>FirstFailed</Value>
+</Value>
+<Value name="9">
+<Value>InvalidParam</Value>
+</Value>
+<Value name="10">
+<Value>IsEditForm</Value>
+</Value>
+<Value name="11">
+<Value>IsEMSReadOnly</Value>
+</Value>
+<Value name="12">
+<Value>OnclickArray</Value>
+</Value>
+<Value name="13">
+<Value>%page</Value>
+</Value>
+<Value name="14">
+<Value>PID</Value>
+</Value>
+<Value name="15">
+<Value>ValidationErrorMsg</Value>
+</Value>
+<Value name="16">
+<Value>cellStyle</Value>
+</Value>
+<Value name="17">
+<Value>currSortMode</Value>
+</Value>
+<Value name="18">
+<Value>%condition</Value>
+</Value>
+<Value name="19">
+<Value>%resource</Value>
+</Value>
+<Value name="20">
+<Value>%import</Value>
+</Value>
+<Value name="21">
+<Value>%includeFiles</Value>
+</Value>
+<Value name="22">
+<Value>index</Value>
+</Value>
+<Value name="23">
+<Value>id</Value>
+</Value>
+<Value name="24">
+<Value>dragEnabled</Value>
+</Value>
+<Value name="25">
+<Value>aux</Value>
+</Value>
+<Value name="26">
+<Value>onbeforedrag</Value>
+</Value>
+<Value name="27">
+<Value>ondrag</Value>
+</Value>
+<Value name="28">
+<Value>onafterdrag</Value>
+</Value>
+<Value name="29">
+<Value>ondrop</Value>
+</Value>
+<Value name="30">
+<Value>containerStyle</Value>
+</Value>
+<Value name="31">
+<Value>align</Value>
+</Value>
+<Value name="32">
+<Value>useSVG</Value>
+</Value>
+<Value name="33">
+<Value>inlineSVG</Value>
+</Value>
+<Value name="34">
+<Value>height</Value>
+</Value>
+<Value name="35">
+<Value>isSoftModal</Value>
+</Value>
+<Value name="36">
+<Value>enclosingClass</Value>
+</Value>
+<Value name="37">
+<Value>enclosingStyle</Value>
+</Value>
+<Value name="38">
+<Value>lastModalIndex</Value>
+</Value>
+<Value name="39">
+<Value>%xmlOutputMode</Value>
+</Value>
+<Value name="40">
+<Value>SVGClassList</Value>
+</Value>
+<Value name="41">
+<Value>%UserPackageList</Value>
+</Value>
+<Value name="42">
+<Value>UserSVGPackageList</Value>
+</Value>
+<Value name="43">
+<Value>backgroundTimerInterval</Value>
+</Value>
+<Value name="44">
+<Value>zenPersistentPopup</Value>
+</Value>
+<Value name="45">
+<Value>onoverlay</Value>
+</Value>
+<Value name="46">
+<Value>designMode</Value>
+</Value>
+<Value name="47">
+<Value>cssLevel</Value>
+</Value>
+<Value name="48">
+<Value>useSoftModals</Value>
+</Value>
+<Value name="49">
+<Value>ISREADONLY</Value>
+</Value>
+<Value name="50">
+<Value>LocatorHeader</Value>
+</Value>
+<Value name="51">
+<Value>ParentURL</Value>
+</Value>
+<Value name="52">
+<Value>StdTitle</Value>
+</Value>
+<Value name="53">
+<Value>TableMaxRows</Value>
+</Value>
+<Value name="54">
+<Value>TablePageSize</Value>
+</Value>
+<Value name="55">
+<Value>aboutPage</Value>
+</Value>
+<Value name="56">
+<Value>cellAlign</Value>
+</Value>
+<Value name="57">
+<Value>cellSize</Value>
+</Value>
+<Value name="58">
+<Value>cellVAlign</Value>
+</Value>
+<Value name="59">
+<Value>children</Value>
+</Value>
+<Value name="60">
+<Value>composite</Value>
+</Value>
+<Value name="61">
+<Value>currStep</Value>
+</Value>
+<Value name="62">
+<Value>currViewMode</Value>
+</Value>
+<Value name="63">
+<Value>disabled</Value>
+</Value>
+<Value name="64">
+<Value>dragAndDrop</Value>
+</Value>
+<Value name="65">
+<Value>dropEnabled</Value>
+</Value>
+<Value name="66">
+<Value>dynamic</Value>
+</Value>
+<Value name="67">
+<Value>error</Value>
+</Value>
+<Value name="68">
+<Value>groupClass</Value>
+</Value>
+<Value name="69">
+<Value>groupStyle</Value>
+</Value>
+<Value name="70">
+<Value>hidden</Value>
+</Value>
+<Value name="71">
+<Value>hint</Value>
+</Value>
+<Value name="72">
+<Value>hintClass</Value>
+</Value>
+<Value name="73">
+<Value>hintStyle</Value>
+</Value>
+<Value name="74">
+<Value>home</Value>
+</Value>
+<Value name="75">
+<Value>homePage</Value>
+</Value>
+<Value name="76">
+<Value>isPopup</Value>
+</Value>
+<Value name="77">
+<Value>label</Value>
+</Value>
+<Value name="78">
+<Value>labelClass</Value>
+</Value>
+<Value name="79">
+<Value>labelDisabledClass</Value>
+</Value>
+<Value name="80">
+<Value>labelPosition</Value>
+</Value>
+<Value name="81">
+<Value>labelStyle</Value>
+</Value>
+<Value name="82">
+<Value>layout</Value>
+</Value>
+<Value name="83">
+<Value>lblTitle</Value>
+</Value>
+<Value name="84">
+<Value>name</Value>
+</Value>
+<Value name="85">
+<Value>nextIndex</Value>
+</Value>
+<Value name="86">
+<Value>onclick</Value>
+</Value>
+<Value name="87">
+<Value>onhide</Value>
+</Value>
+<Value name="88">
+<Value>onrefresh</Value>
+</Value>
+<Value name="89">
+<Value>onshow</Value>
+</Value>
+<Value name="90">
+<Value>onupdate</Value>
+</Value>
+<Value name="91">
+<Value>overlayMode</Value>
+</Value>
+<Value name="92">
+<Value>pageModified</Value>
+</Value>
+<Value name="93">
+<Value>parent</Value>
+</Value>
+<Value name="94">
+<Value>popupParent</Value>
+</Value>
+<Value name="95">
+<Value>renderFlag</Value>
+</Value>
+<Value name="96">
+<Value>searchKey</Value>
+</Value>
+<Value name="97">
+<Value>showLabel</Value>
+</Value>
+<Value name="98">
+<Value>slice</Value>
+</Value>
+<Value name="99">
+<Value>title</Value>
+</Value>
+<Value name="100">
+<Value>tuple</Value>
+</Value>
+<Value name="101">
+<Value>valign</Value>
+</Value>
+<Value name="102">
+<Value>visible</Value>
+</Value>
+<Value name="103">
+<Value>width</Value>
+</Value>
+<Value name="104">
+<Value>window</Value>
+</Value>
+</Data>
+</Storage>
+</Class>
+</Export>
